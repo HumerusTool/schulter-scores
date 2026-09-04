@@ -141,6 +141,7 @@ th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--line);font
 th{background:#f6f8f9;font-weight:600}
 tr:last-child td{border-bottom:none}
 .pill{display:inline-block;padding:2px 10px;border-radius:20px;background:var(--accent-soft);color:var(--accent);font-size:14px;margin:0 4px 4px 0}
+.pill.warnpill{background:#fdf0e2;color:#8a4b12}
 .notice{background:#fff8ec;border:1px solid #e8d3ad;color:var(--warn);padding:14px 16px;border-radius:8px;margin:0 0 20px;font-size:16px}
 .section{margin:0 0 36px}
 .section > h3{margin-bottom:14px}
@@ -175,8 +176,9 @@ a{color:var(--accent)}
     <div class="section">
       <h3>Fall</h3>
       <div class="grid2">
-        <div class="field"><label for="f-pid">Pseudonym oder Fall-Nummer</label>
-          <input id="f-pid" type="text" autocomplete="off" placeholder="z. B. SCH-0142"></div>
+        <div class="field"><label for="f-notiz">Notiz, optional</label>
+          <input id="f-notiz" type="text" autocomplete="off" placeholder="z. B. Sprechstunde Dr. M.">
+          <p class="hint">Eine Fall-Nummer ist nicht nötig. Die Zuordnung läuft über Name und Geburtsdatum, die der Patient selbst eingibt. Kommt er wieder, erkennt die App ihn und zählt den Besuch hoch.</p></div>
         <div class="field"><label for="f-unt">Datum der Untersuchung</label>
           <input id="f-unt" type="date"></div>
         <div class="field"><label for="f-op">Datum der Operation</label>
@@ -419,6 +421,78 @@ function zeitfenster(tage) {
   return Math.round(m / 12) + ' Jahre';
 }
 function heute() { return new Date().toISOString().slice(0, 10); }
+
+/* Personenerkennung über Name und Geburtsdatum */
+function normName(t) {
+  return String(t || '').toLowerCase().replace(/ß/g, 'ss')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+}
+function personKey(m) {
+  if (!m || !m.geburtsdatum || !m.nachname) return null;
+  return normName(m.nachname) + '|' + normName(m.vorname) + '|' + m.geburtsdatum;
+}
+function findePerson(key) {
+  if (!key) return null;
+  const treffer = Store.data.records.filter(r => r.meta.person_key === key);
+  if (!treffer.length) return null;
+  return treffer.sort((a, b) => (a.meta.visit_nr || 0) - (b.meta.visit_nr || 0))[treffer.length - 1];
+}
+function naechstePid() {
+  let max = 0;
+  Store.data.records.forEach(r => {
+    const m = /^P(\d+)$/.exec(r.meta.patient_id || '');
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return 'P' + String(max + 1).padStart(4, '0');
+}
+/* Ein Behandlungsfall ist eine Person plus Gelenk plus Seite.
+   Andere Seite oder anderes Gelenk ergibt einen neuen Fall mit eigener Zählung. */
+function findeFall(pid, region, seite) {
+  const t = Store.data.records.filter(r =>
+    r.meta.patient_id === pid && r.meta.region === region && r.meta.seite === seite);
+  if (!t.length) return null;
+  return t.sort((a, b) => ((a.meta.fall_nr || 1) * 1000 + (a.meta.visit_nr || 0)) -
+                          ((b.meta.fall_nr || 1) * 1000 + (b.meta.visit_nr || 0)))[t.length - 1];
+}
+function naechsteFallNr(pid) {
+  let max = 0;
+  Store.data.records.forEach(r => { if (r.meta.patient_id === pid) max = Math.max(max, r.meta.fall_nr || 1); });
+  return max + 1;
+}
+function naechsterBesuch(pid, fallNr) {
+  let max = 0;
+  Store.data.records.forEach(r => {
+    if (r.meta.patient_id === pid && (r.meta.fall_nr || 1) === fallNr) max = Math.max(max, r.meta.visit_nr || 0);
+  });
+  return max + 1;
+}
+function faelleVon(pid) {
+  const map = {};
+  Store.data.records.forEach(r => {
+    if (r.meta.patient_id !== pid) return;
+    const f = r.meta.fall_nr || 1;
+    if (!map[f] || (r.meta.visit_nr || 0) >= (map[f].meta.visit_nr || 0)) map[f] = r;
+  });
+  return Object.keys(map).sort().map(k => map[k]);
+}
+/* Mögliche Dubletten: gleiches Geburtsdatum, andere Schreibweise des Namens */
+function moeglicheDubletten(m) {
+  if (!m || !m.geburtsdatum) return [];
+  return personenListe().filter(x =>
+    x.pid !== m.patient_id && x.meta.geburtsdatum === m.geburtsdatum);
+}
+
+function personenListe() {
+  const map = {};
+  Store.data.records.forEach(r => {
+    const pid = r.meta.patient_id;
+    if (!pid) return;
+    if (!map[pid]) map[pid] = { pid: pid, meta: r.meta, besuche: 0 };
+    map[pid].besuche++;
+    if ((r.meta.visit_nr || 0) >= (map[pid].meta.visit_nr || 0)) map[pid].meta = r.meta;
+  });
+  return Object.keys(map).sort().map(k => map[k]);
+}
 
 /* Alters- und geschlechtsnormierter Constant-Score (Constant 1986) */
 const CONSTANT_NORM = [
@@ -921,6 +995,189 @@ const INSTRUMENTS = [
   }
 },
 
+/* ---- WOSI ---- */
+{
+  id: 'wosi', name: 'WOSI (Instabilität, Lebensqualität)', region: 'shoulder',
+  pages: seiten('WOSI', 'Die folgenden Fragen betreffen Ihre Schulter in der vergangenen Woche. Bewegen Sie den Regler oder tippen Sie die Linie an der passenden Stelle an.', [
+    ['Wie starke Schmerzen verspüren Sie in Ihrer Schulter bei Tätigkeiten über Kopf?', 'kein Schmerz', 'extreme Schmerzen'],
+    ['Wie starke Schmerzen oder wie starkes Pulsieren verspüren Sie in Ihrer Schulter?', 'keine', 'extrem'],
+    ['Wie starke Schwäche oder wie starken Kraftmangel verspüren Sie in Ihrer Schulter?', 'keine Schwäche', 'extreme Schwäche'],
+    ['Wie starke Ermüdung oder wie wenig Ausdauer verspüren Sie in Ihrer Schulter?', 'keine Ermüdung', 'extreme Ermüdung'],
+    ['Wie viel Knacken, Reißen oder Schnappen verspüren Sie in Ihrer Schulter?', 'kein Knacken', 'extremes Knacken'],
+    ['Wie viel Steifigkeit verspüren Sie in Ihrer Schulter?', 'keine Steifigkeit', 'extreme Steifigkeit'],
+    ['Wie starke Beschwerden haben Sie in der Nackenmuskulatur wegen Ihrer Schulter?', 'keine Beschwerden', 'extreme Beschwerden'],
+    ['Wie viel Instabilitätsgefühl oder Lockerheit verspüren Sie in Ihrer Schulter?', 'keine Instabilität', 'extreme Instabilität'],
+    ['Wie sehr gleichen Sie Ihre Schulter mit anderen Muskeln aus?', 'gar nicht', 'extrem'],
+    ['Wie viel Verlust an Beweglichkeit haben Sie in Ihrer Schulter?', 'kein Verlust', 'extremer Verlust'],
+    ['Wie sehr hat Ihre Schulter Ihre Teilnahme an Sport oder Freizeitaktivitäten eingeschränkt?', 'nicht eingeschränkt', 'extrem eingeschränkt'],
+    ['Wie sehr hat Ihre Schulter Tätigkeiten beeinträchtigt, die für Ihren Sport oder Ihre Arbeit nötig sind?', 'nicht beeinträchtigt', 'extrem beeinträchtigt'],
+    ['Wie sehr haben Sie das Gefühl, dass Ihr Arm bei Aktivitäten Schutz braucht?', 'gar nicht', 'extrem'],
+    ['Wie viele Schwierigkeiten haben Sie, schwere Gegenstände unterhalb der Schulterhöhe anzuheben?', 'keine', 'extreme'],
+    ['Wie sehr fürchten Sie sich vor einem Sturz auf Ihre Schulter?', 'keine Angst', 'extreme Angst'],
+    ['Wie viele Schwierigkeiten haben Sie, Ihr gewünschtes Fitnessniveau zu halten?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Herumtoben oder Balgen mit Familie oder Freunden?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Schlafen wegen Ihrer Schulter?', 'keine', 'extreme'],
+    ['Wie sehr sind Sie sich Ihrer Schulter bewusst?', 'nicht bewusst', 'extrem bewusst'],
+    ['Wie sehr sind Sie besorgt, dass Ihre Schulter schlechter wird?', 'nicht besorgt', 'extrem besorgt'],
+    ['Wie viel Frustration empfinden Sie wegen Ihrer Schulter?', 'keine Frustration', 'extrem frustriert']
+  ].map(function (x, i) { return vas('wosi_' + (i + 1), x[0], x[1], x[2]); }), 4),
+  score: function (a) {
+    const r = vasScore(a, 'wosi_', 21, 2100);
+    return { sc_wosi_roh: r ? r.roh : null, sc_wosi_prozent: r ? r.prozent : null };
+  }
+},
+
+/* ---- WORC ---- */
+{
+  id: 'worc', name: 'WORC (Rotatorenmanschette, Lebensqualität)', region: 'shoulder',
+  pages: seiten('WORC', 'Die folgenden Fragen betreffen Ihre Schulter in der vergangenen Woche. Bewegen Sie den Regler oder tippen Sie die Linie an der passenden Stelle an.', [
+    ['Wie starke stechende Schmerzen verspüren Sie in Ihrer Schulter?', 'kein Schmerz', 'extremer Schmerz'],
+    ['Wie starken bohrenden Dauerschmerz verspüren Sie in Ihrer Schulter?', 'kein Schmerz', 'extremer Schmerz'],
+    ['Wie viel Schwäche verspüren Sie in Ihrer Schulter?', 'keine Schwäche', 'extreme Schwäche'],
+    ['Wie starke Steifheit oder wie wenig Bewegung verspüren Sie in Ihrer Schulter?', 'keine Steifheit', 'extreme Steifheit'],
+    ['Wie sehr stört Sie ein Klicken, Reiben oder Knirschen in Ihrer Schulter?', 'überhaupt nicht', 'extrem'],
+    ['Wie viel Unbehagen verspüren Sie in Ihrer Nackenmuskulatur wegen Ihrer Schulter?', 'kein Unbehagen', 'extremes Unbehagen'],
+    ['Wie sehr hat Ihre Schulter Ihren Fitnesszustand beeinträchtigt?', 'keine Beeinträchtigung', 'extreme Beeinträchtigung'],
+    ['Wie viele Schwierigkeiten bereitet Ihnen Ihre Schulter bei Liegestütz oder anstrengenden Schulterübungen?', 'keine', 'extreme'],
+    ['Wie sehr hat Ihre Schulter Ihre Fähigkeit beeinflusst, weit oder kräftig zu werfen?', 'kein Einfluss', 'extremer Einfluss'],
+    ['Wie sehr befürchten Sie, dass jemand oder ein Gegenstand Ihre Schulter berührt?', 'keine Angst', 'extreme Angst'],
+    ['Wie viele Schwierigkeiten haben Sie bei täglicher Arbeit in Haus und Garten?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie bei Arbeiten über Schulterniveau?', 'keine', 'extreme'],
+    ['Wie sehr benutzen Sie den nicht betroffenen Arm als Ersatz für den betroffenen?', 'überhaupt nicht', 'andauernd'],
+    ['Wie viele Schwierigkeiten haben Sie beim Heben schwerer Lasten auf oder unter Schulterniveau?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Schlafen wegen Ihrer Schulter?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Frisieren wegen Ihrer Schulter?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Herumtoben mit Familie oder Freunden?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim An- oder Ausziehen?', 'keine', 'extreme'],
+    ['Wie sehr fühlen Sie sich wegen Ihrer Schulter frustriert?', 'keine Frustration', 'extreme Frustration'],
+    ['Wie niedergeschlagen sind Sie wegen Ihrer Schulter?', 'überhaupt nicht', 'extrem'],
+    ['Wie besorgt sind Sie wegen des Einflusses Ihrer Schulter auf Ihre berufliche Tätigkeit?', 'nicht beunruhigt', 'extrem beunruhigt']
+  ].map(function (x, i) { return vas('worc_' + (i + 1), x[0], x[1], x[2]); }), 4),
+  score: function (a) {
+    const r = vasScore(a, 'worc_', 21, 2100);
+    return { sc_worc_roh: r ? r.roh : null, sc_worc_prozent: r ? r.prozent : null };
+  }
+},
+
+/* ---- WOOS ---- */
+{
+  id: 'woos', name: 'WOOS (Omarthrose, Lebensqualität)', region: 'shoulder',
+  pages: seiten('WOOS', 'Die folgenden Fragen betreffen Ihre Schulter in der vergangenen Woche. Bewegen Sie den Regler oder tippen Sie die Linie an der passenden Stelle an.', [
+    ['Wie starken Schmerz verspüren Sie in Ihrer Schulter bei Bewegung?', 'kein Schmerz', 'extremer Schmerz'],
+    ['Wie starken quälenden Dauerschmerz haben Sie in Ihrer Schulter?', 'kein Schmerz', 'extremer Schmerz'],
+    ['Wie viel Schwäche verspüren Sie in Ihrer Schulter?', 'keine Schwäche', 'extreme Schwäche'],
+    ['Wie starke Steifigkeit verspüren Sie in Ihrer Schulter?', 'keine Steifigkeit', 'extreme Steifigkeit'],
+    ['Wie viel Reiben verspüren Sie in Ihrer Schulter?', 'kein Reiben', 'extremes Reiben'],
+    ['Wie sehr ist Ihre Schulter vom Wetter beeinflusst?', 'nicht beeinflusst', 'extrem beeinflusst'],
+    ['Wie viele Schwierigkeiten haben Sie beim Arbeiten oder Greifen über Schulterhöhe?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Heben von Gegenständen unterhalb der Schulterhöhe?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie bei wiederholten Bewegungen unterhalb der Schulterhöhe, etwa Kehren oder Wischen?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim kraftvollen Ziehen oder Drücken?', 'keine', 'extreme'],
+    ['Wie sehr belastet Sie die Zunahme der Schmerzen nach Aktivitäten?', 'gar nicht', 'extrem belastet'],
+    ['Wie viele Schwierigkeiten haben Sie beim Schlafen wegen Ihrer Schulter?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Frisieren Ihrer Haare?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie, Ihr gewünschtes Fitnessniveau zu halten?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim Greifen nach hinten, etwa um ein Hemd in die Hose zu stecken?', 'keine', 'extreme'],
+    ['Wie viele Schwierigkeiten haben Sie beim An- oder Ausziehen?', 'keine', 'extreme'],
+    ['Wie viel Frustration oder Entmutigung empfinden Sie wegen Ihrer Schulter?', 'keine', 'extreme'],
+    ['Wie sehr sind Sie besorgt, was in Zukunft mit Ihrer Schulter passiert?', 'gar nicht', 'extrem besorgt'],
+    ['Wie sehr fühlen Sie sich als Belastung für andere?', 'gar nicht', 'extrem']
+  ].map(function (x, i) { return vas('woos_' + (i + 1), x[0], x[1], x[2]); }), 4),
+  score: function (a) {
+    const r = vasScore(a, 'woos_', 19, 1900);
+    return { sc_woos_roh: r ? r.roh : null, sc_woos_prozent: r ? r.prozent : null };
+  }
+},
+
+/* ---- SPADI ---- */
+{
+  id: 'spadi', name: 'SPADI (Schmerz und Behinderung)', region: 'shoulder',
+  pages: seiten('SPADI: Schmerzen', 'Wie stark waren Ihre Schmerzen in der vergangenen Woche in den folgenden Situationen? 0 bedeutet keine Schmerzen, 10 die schlimmsten vorstellbaren Schmerzen.', [
+    ['spadi_p1', 'wenn die Schmerzen am stärksten waren'],
+    ['spadi_p2', 'wenn Sie auf der betroffenen Seite liegen'],
+    ['spadi_p3', 'wenn Sie nach etwas auf einem hohen Regal greifen'],
+    ['spadi_p4', 'wenn Sie Ihren Nacken berühren'],
+    ['spadi_p5', 'wenn Sie mit dem betroffenen Arm etwas stoßen oder drücken']
+  ].map(function (x) { return vas10(x[0], x[1], 'keine Schmerzen', 'schlimmste Schmerzen'); }), 3)
+  .concat(seiten('SPADI: Behinderung', 'Wie viele Schwierigkeiten hatten Sie in der vergangenen Woche bei den folgenden Tätigkeiten? 0 bedeutet keine Schwierigkeiten, 10 nicht möglich.', [
+    ['spadi_d1', 'Die Haare waschen'],
+    ['spadi_d2', 'Den Rücken waschen'],
+    ['spadi_d3', 'Ein Unterhemd oder einen Pullover anziehen'],
+    ['spadi_d4', 'Ein Hemd anziehen, das vorne zugeknöpft wird'],
+    ['spadi_d5', 'Eine Hose anziehen'],
+    ['spadi_d6', 'Einen Gegenstand auf ein hohes Regal legen'],
+    ['spadi_d7', 'Einen Gegenstand von etwa 5 kg tragen'],
+    ['spadi_d8', 'Etwas aus der hinteren Hosentasche nehmen']
+  ].map(function (x) { return vas10(x[0], x[1], 'keine Schwierigkeiten', 'nicht möglich'); }), 4)),
+  score: function (a) {
+    let ps = 0, pn = 0, ds = 0, dn = 0;
+    for (let i = 1; i <= 5; i++) { const v = a['spadi_p' + i]; if (v != null) { ps += v; pn++; } }
+    for (let i = 1; i <= 8; i++) { const v = a['spadi_d' + i]; if (v != null) { ds += v; dn++; } }
+    const p = pn >= 4 ? Math.round(ps / (pn * 10) * 1000) / 10 : null;
+    const d = dn >= 6 ? Math.round(ds / (dn * 10) * 1000) / 10 : null;
+    return {
+      sc_spadi_schmerz: p, sc_spadi_behinderung: d,
+      sc_spadi_gesamt: (p != null && d != null) ? Math.round((p + d) / 2 * 10) / 10 : null
+    };
+  }
+},
+
+/* ---- PRTEE ---- */
+{
+  id: 'prtee', name: 'PRTEE (Epicondylitis)', region: 'elbow',
+  pages: seiten('PRTEE: Schmerzen', 'Bitte beurteilen Sie Ihre Schmerzen im Ellenbogen in der vergangenen Woche. 0 bedeutet kein Schmerz, 10 den schlimmsten vorstellbaren Schmerz.', [
+    ['prtee_p1', 'In Ruhe'],
+    ['prtee_p2', 'Bei einer Tätigkeit mit wiederholten Armbewegungen'],
+    ['prtee_p3', 'Beim Tragen einer Einkaufstüte'],
+    ['prtee_p4', 'Wenn der Schmerz am geringsten war'],
+    ['prtee_p5', 'Wenn der Schmerz am stärksten war']
+  ].map(function (x) { return vas10(x[0], x[1], 'kein Schmerz', 'schlimmster Schmerz'); }), 3)
+  .concat(seiten('PRTEE: Tätigkeiten', 'Wie viele Schwierigkeiten hatten Sie in der vergangenen Woche bei den folgenden Tätigkeiten? 0 bedeutet keine Schwierigkeiten, 10 nicht möglich.', [
+    ['prtee_f1', 'Einen Türknauf oder Schlüssel drehen'],
+    ['prtee_f2', 'Eine Einkaufstasche oder Aktentasche in der Hand tragen'],
+    ['prtee_f3', 'Eine volle Tasse oder ein volles Glas zum Mund heben'],
+    ['prtee_f4', 'Ein Glas öffnen'],
+    ['prtee_f5', 'Eine Hose hochziehen'],
+    ['prtee_f6', 'Einen Waschlappen oder ein nasses Handtuch auswringen'],
+    ['prtee_f7', 'Persönliche Tätigkeiten wie Anziehen und Waschen'],
+    ['prtee_f8', 'Hausarbeit wie Putzen und Instandhaltung'],
+    ['prtee_f9', 'Arbeit im Beruf oder alltägliche Arbeit'],
+    ['prtee_f10', 'Freizeit- oder Sportaktivitäten']
+  ].map(function (x) { return vas10(x[0], x[1], 'keine Schwierigkeiten', 'nicht möglich'); }), 4)),
+  score: function (a) {
+    let ps = 0, fs = 0;
+    for (let i = 1; i <= 5; i++) { const v = a['prtee_p' + i]; if (v == null) return { sc_prtee_gesamt: null }; ps += v; }
+    for (let i = 1; i <= 10; i++) { const v = a['prtee_f' + i]; if (v == null) return { sc_prtee_schmerz: ps, sc_prtee_gesamt: null }; fs += v; }
+    return { sc_prtee_schmerz: ps, sc_prtee_funktion: fs / 2, sc_prtee_gesamt: Math.round((ps + fs / 2) * 10) / 10 };
+  }
+},
+
+/* ---- Taft-Score ---- */
+{
+  id: 'taft', name: 'Taft-Score (AC-Gelenk, Untersucher)', region: 'shoulder', examOnly: true,
+  note: 'Subjektive, objektive und radiologische Beurteilung.',
+  pages: [],
+  exam: [{ title: 'Taft-Score', intro: 'Beurteilung von Verletzungen des Schultereckgelenks. Höchstwert 12 Punkte.', items: [
+    { id: 'taft_subj', type: 'radio', side: true, text: 'Subjektiv: Schmerz und Steifigkeit',
+      opts: [O(4, 'Kein Schmerz und keine Steifigkeit'), O(3, 'Schmerz oder Steifigkeit nur bei starker Belastung oder Wetterwechsel'), O(2, 'Schmerz oder Steifigkeit bei Routineaktivitäten'), O(1, 'Ruheschmerz')] },
+    { id: 'taft_obj', type: 'radio', side: true, text: 'Objektiv: Kraft und Beweglichkeit',
+      opts: [O(4, 'Weder Kraft noch Beweglichkeit beeinträchtigt'), O(3, 'Weniger als ein Drittel vermindert'), O(2, 'Zwischen einem und zwei Dritteln vermindert'), O(1, 'Mehr als zwei Drittel vermindert oder beides um mehr als ein Drittel')] },
+    { id: 'taft_minus', type: 'radio', side: true, text: 'Gelenkschmerz, Krepitation oder schlechtes kosmetisches Ergebnis',
+      opts: [O(0, 'Nein'), O(-1, 'Ja, ein Punkt Abzug')] },
+    { id: 'taft_roe', type: 'radio', side: true, text: 'Radiologisch',
+      opts: [O(4, 'Unauffälliges AC-Gelenk'), O(3, 'Subluxation des AC-Gelenks'), O(2, 'Luxation des AC-Gelenks'), O(1, 'Posttraumatische AC-Gelenkarthrose')] }
+  ]}],
+  score: function (a, ctx) {
+    const o = {};
+    ctx.sides.forEach(function (s) {
+      const t = ['taft_subj', 'taft_obj', 'taft_minus', 'taft_roe'].map(function (k) { return a[k + '_' + s]; });
+      if (t.some(function (x) { return x == null; })) return;
+      o['sc_taft_' + s] = t.reduce(function (x, y) { return x + y; }, 0);
+    });
+    return o;
+  }
+},
+
 /* ---- Untersucher: Beweglichkeit Schulter ---- */
 {
   id: 'romsh', name: 'Beweglichkeit Schulter (Untersucher)', region: 'shoulder', examOnly: true,
@@ -960,32 +1217,52 @@ const PRESETS = [
 ];
 
 
+/* Bausteine für die Fragebögen mit visueller Analogskala */
+function vas(id, text, links, rechts) {
+  return { id: id, type: 'slider', min: 0, max: 100, start: 0, text: text, ends: [links, rechts] };
+}
+function vas10(id, text, links, rechts) {
+  return { id: id, type: 'scale', min: 0, max: 10, text: text, ends: [links, rechts], compact: true };
+}
+function seiten(titel, intro, items, proSeite) {
+  const out = [];
+  for (let i = 0; i < items.length; i += proSeite) {
+    out.push({ title: titel, intro: i === 0 ? intro : null, items: items.slice(i, i + proSeite) });
+  }
+  return out;
+}
+function vasScore(a, prefix, n, max) {
+  let sum = 0;
+  for (let i = 1; i <= n; i++) { const v = a[prefix + i]; if (v == null) return null; sum += v; }
+  return { roh: sum, prozent: Math.round((max - sum) / max * 1000) / 10 };
+}
+
 /* ---------------------------------------------------------------
    2b. Diagnosen und zugehörige Bögen
    --------------------------------------------------------------- */
-const BOGEN_REIHENFOLGE = ['ssv', 'sev', 'vas15', 'cs', 'unt', 'ases', 'sst', 'rowe', 'oss', 'meps', 'oes', 'dash', 'eq5d', 'romsh', 'romel'];
+const BOGEN_REIHENFOLGE = ['ssv', 'sev', 'vas15', 'cs', 'unt', 'ases', 'sst', 'rowe', 'oss', 'spadi', 'wosi', 'worc', 'woos', 'meps', 'oes', 'prtee', 'dash', 'eq5d', 'taft', 'romsh', 'romel'];
 
 const DIAGNOSES = [
-  { id: 'rm_ruptur', region: 'shoulder', label: 'Riss einer Sehne der Rotatorenmanschette', ids: ['cs', 'ases'] },
-  { id: 'impingement', region: 'shoulder', label: 'Engpasssyndrom, Impingement, Schleimbeutelentzündung', ids: ['cs', 'ases'] },
-  { id: 'kalk', region: 'shoulder', label: 'Kalkschulter', ids: ['cs', 'ases'] },
-  { id: 'frozen', region: 'shoulder', label: 'Schultersteife, Frozen Shoulder', ids: ['cs', 'ases'] },
-  { id: 'omarthrose', region: 'shoulder', label: 'Verschleiß des Schultergelenks, Arthrose', ids: ['cs', 'oss'] },
-  { id: 'defektarthropathie', region: 'shoulder', label: 'Arthrose mit Sehnenschaden, Defektarthropathie', ids: ['cs', 'ases'] },
-  { id: 'prothese', region: 'shoulder', label: 'Künstliches Schultergelenk, Prothese', ids: ['cs', 'oss'] },
+  { id: 'rm_ruptur', region: 'shoulder', label: 'Riss einer Sehne der Rotatorenmanschette', ids: ['cs', 'ases', 'worc'] },
+  { id: 'impingement', region: 'shoulder', label: 'Engpasssyndrom, Impingement, Schleimbeutelentzündung', ids: ['cs', 'ases', 'spadi'] },
+  { id: 'kalk', region: 'shoulder', label: 'Kalkschulter', ids: ['cs', 'ases', 'spadi'] },
+  { id: 'frozen', region: 'shoulder', label: 'Schultersteife, Frozen Shoulder', ids: ['cs', 'ases', 'spadi'] },
+  { id: 'omarthrose', region: 'shoulder', label: 'Verschleiß des Schultergelenks, Arthrose', ids: ['cs', 'oss', 'woos'] },
+  { id: 'defektarthropathie', region: 'shoulder', label: 'Arthrose mit Sehnenschaden, Defektarthropathie', ids: ['cs', 'ases', 'worc'] },
+  { id: 'prothese', region: 'shoulder', label: 'Künstliches Schultergelenk, Prothese', ids: ['cs', 'oss', 'woos'] },
   { id: 'humerusfraktur', region: 'shoulder', label: 'Bruch des Oberarmkopfes', ids: ['cs', 'oss'] },
   { id: 'klavikulafraktur', region: 'shoulder', label: 'Bruch des Schlüsselbeins', ids: ['cs'] },
-  { id: 'ac_sprengung', region: 'shoulder', label: 'Verrenkung des Schultereckgelenks, AC-Sprengung', ids: ['cs'] },
-  { id: 'ac_arthrose', region: 'shoulder', label: 'Verschleiß des Schultereckgelenks', ids: ['cs'] },
-  { id: 'luxation_erst', region: 'shoulder', label: 'Erstmalige Auskugelung der Schulter', ids: ['rowe', 'sst'] },
-  { id: 'instabil_rezidiv', region: 'shoulder', label: 'Wiederkehrende Auskugelung oder Instabilität', ids: ['rowe', 'sst'] },
+  { id: 'ac_sprengung', region: 'shoulder', label: 'Verrenkung des Schultereckgelenks, AC-Sprengung', ids: ['cs', 'taft'] },
+  { id: 'ac_arthrose', region: 'shoulder', label: 'Verschleiß des Schultereckgelenks', ids: ['cs', 'taft'] },
+  { id: 'luxation_erst', region: 'shoulder', label: 'Erstmalige Auskugelung der Schulter', ids: ['rowe', 'sst', 'wosi'] },
+  { id: 'instabil_rezidiv', region: 'shoulder', label: 'Wiederkehrende Auskugelung oder Instabilität', ids: ['rowe', 'sst', 'wosi'] },
   { id: 'bizeps_slap', region: 'shoulder', label: 'Schaden der langen Bizepssehne oder SLAP-Läsion', ids: ['cs', 'ases'] },
-  { id: 'schulter_sonstige', region: 'shoulder', label: 'Andere Schulterbeschwerden oder unklar', ids: ['cs', 'ases'] },
+  { id: 'schulter_sonstige', region: 'shoulder', label: 'Andere Schulterbeschwerden oder unklar', ids: ['cs', 'ases', 'spadi'] },
 
   { id: 'radiuskopf', region: 'elbow', label: 'Bruch des Speichenköpfchens', ids: ['meps', 'oes'] },
   { id: 'olekranon', region: 'elbow', label: 'Bruch des Ellenhakens', ids: ['meps', 'oes'] },
   { id: 'ellenbogen_luxation', region: 'elbow', label: 'Auskugelung oder Instabilität des Ellenbogens', ids: ['meps', 'oes'] },
-  { id: 'epicondylitis', region: 'elbow', label: 'Tennis- oder Golferellenbogen', ids: ['oes'] },
+  { id: 'epicondylitis', region: 'elbow', label: 'Tennis- oder Golferellenbogen', ids: ['oes', 'prtee'] },
   { id: 'bizepssehne_distal', region: 'elbow', label: 'Riss der Bizepssehne am Ellenbogen', ids: ['meps', 'oes'] },
   { id: 'ellenbogen_arthrose', region: 'elbow', label: 'Verschleiß des Ellenbogens oder Prothese', ids: ['meps', 'oes'] },
   { id: 'ellenbogen_sonstige', region: 'elbow', label: 'Andere Ellenbogenbeschwerden oder unklar', ids: ['meps', 'oes'] }
@@ -1027,17 +1304,24 @@ function intakePages(opDatumBekannt) {
           opts: [O('re', 'Rechts'), O('li', 'Links'), O('beid', 'Beidhändig')] }
       ] }
   ];
-  if (!opDatumBekannt) {
-    pages.push({ title: 'Operation', items: [
-      { id: 'in_op_ja', type: 'radio', rerender: true, text: 'Wurden Sie an diesem Gelenk bereits operiert?',
-        opts: [O(1, 'Ja'), O(0, 'Nein')] },
-      { id: 'in_op_datum', type: 'date', text: 'Datum der Operation',
-        note: 'Wenn Sie den genauen Tag nicht wissen, wählen Sie den ungefähren Monat.',
-        showIf: a => a.in_op_ja === 1 }
-    ]});
-  }
+  pages.push({ title: 'Ihr Anliegen heute', items: [
+    { id: 'in_gleich', type: 'radio', rerender: true,
+      showIf: a => !!App.fallTreffer(a),
+      text: a => 'Bei Ihrem letzten Besuch ging es um: ' + App.fallBeschreibung(a) + '. Geht es heute wieder darum?',
+      note: 'Wenn es heute um etwas Neues geht, legen wir einen zweiten Fall an.',
+      opts: [O(1, 'Ja, dasselbe Anliegen'), O(0, 'Nein, es geht um etwas anderes')] }
+  ]});
+  pages.push({ title: 'Operation', items: [
+    { id: 'in_op_ja', type: 'radio', rerender: true, text: 'Wurden Sie an diesem Gelenk bereits operiert?',
+      opts: [O(1, 'Ja'), O(0, 'Nein')],
+      showIf: a => !opDatumBekannt && !App.bekanntesOpDatum(a) },
+    { id: 'in_op_datum', type: 'date', text: 'Datum der Operation',
+      note: 'Wenn Sie den genauen Tag nicht wissen, wählen Sie den ungefähren Monat.',
+      showIf: a => !opDatumBekannt && !App.bekanntesOpDatum(a) && a.in_op_ja === 1 }
+  ]});
   pages.push({ title: 'Ihre Erkrankung', intro: 'Bitte wählen Sie aus, was am ehesten auf Sie zutrifft. Wenn Sie unsicher sind, wählen Sie den letzten Eintrag. Ihre Auswahl bestimmt, welche Fragen anschließend gestellt werden.',
     items: [{ id: 'in_diag', type: 'radio', text: 'Worum geht es bei Ihnen?',
+      showIf: a => !App.bekannteDiagnose(a),
       opts: (ctx, a) => DIAGNOSES.filter(d => d.region === (a.in_region || 'shoulder')).map(d => O(d.id, d.label)) }] });
   return pages;
 }
@@ -1097,14 +1381,23 @@ const App = {
 
   updateHome() {
     const n = Store.data.records.length;
-    document.getElementById('home-count').textContent =
-      n === 0 ? 'Noch keine gespeicherten Erhebungen.' : n + ' gespeicherte Erhebung' + (n === 1 ? '' : 'en') + ' auf diesem Gerät.';
+    const p = personenListe().length;
+    const offen = Store.data.records.filter(r => r.meta.vollstaendig === 0).length;
+    let t = n === 0 ? 'Noch keine gespeicherten Erhebungen.'
+      : n + ' Erhebung' + (n === 1 ? '' : 'en') + ' von ' + p + ' Patienten auf diesem Gerät.';
+    if (offen) t += ' ' + offen + ' davon ohne vollständigen Befund.';
+    const le = Store.data.lastExport;
+    if (n && le) {
+      const tage = tageZwischen(le, heute());
+      if (tage != null && tage >= 3) t += ' Letzter Export vor ' + tage + ' Tagen.';
+    } else if (n) t += ' Noch nie exportiert.';
+    document.getElementById('home-count').textContent = t;
   },
 
   /* ---- Vorbereitung ---- */
   newSurvey() {
     this.region = null;
-    document.getElementById('f-pid').value = '';
+    document.getElementById('f-notiz').value = '';
     document.getElementById('f-unt').value = heute();
     document.getElementById('f-op').value = '';
     this.setMode('patient');
@@ -1197,22 +1490,21 @@ const App = {
   },
 
   startSurvey() {
-    const pid = document.getElementById('f-pid').value.trim();
-    if (!pid) { alert('Bitte ein Pseudonym oder eine Fall-Nummer eintragen.'); return; }
     const unt = document.getElementById('f-unt').value || heute();
     const opd = document.getElementById('f-op').value || null;
     const now = new Date();
     this.state.meta = {
-      record_id: pid,
+      record_id: null, patient_id: null, visit_nr: null, person_key: null, vorbesuch: null,
       nachname: null, vorname: null, geburtsdatum: null, alter: null, geschlecht: null,
       untersuchung_datum: unt, uhrzeit: now.toTimeString().slice(0, 5),
       op_datum: opd, tage_seit_op: null, monate_seit_op: null, zeitfenster: null,
       seite: 're', dominant: 're',
       diagnose_code: null, diagnose: null,
-      region: 'shoulder', boegen: ''
+      region: 'shoulder', boegen: '', notiz: document.getElementById('f-notiz').value.trim() || null
     };
     this.state.answers = {};
     this.unlocked = false;
+    this.editing = null;
 
     if (this.mode === 'manuell') {
       const ids = this.selectedIds();
@@ -1230,8 +1522,13 @@ const App = {
         region: this.guessRegion(ids),
         boegen: ids.join(' ')
       });
+      if (!this.state.meta.nachname || !this.state.meta.geburtsdatum) {
+        alert('Für die Zuordnung werden Nachname und Geburtsdatum gebraucht.');
+        return;
+      }
       this.state.sel = ids;
       this.state.phase = 'survey';
+      this.identitaet();
       this.buildPages();
     } else {
       this.state.sel = [];
@@ -1244,6 +1541,35 @@ const App = {
     this.persistDraft();
     this.go('s-survey');
     this.render();
+  },
+
+  /* Fall der richtigen Person zuordnen und Angaben vom Vorbesuch übernehmen */
+  identitaet() {
+    const m = this.state.meta;
+    m.person_key = personKey(m);
+    const person = findePerson(m.person_key);
+    m.patient_id = person ? person.meta.patient_id : (m.patient_id || naechstePid());
+
+    const vorFall = findeFall(m.patient_id, m.region, m.seite);
+    const gleicheDiagnose = !m.diagnose_code || !vorFall || !vorFall.meta.diagnose_code ||
+      m.diagnose_code === vorFall.meta.diagnose_code;
+    const weiter = vorFall && m.fortsetzung !== 0 && gleicheDiagnose;
+
+    if (weiter) {
+      m.fall_nr = vorFall.meta.fall_nr || 1;
+      if (!m.op_datum && vorFall.meta.op_datum) m.op_datum = vorFall.meta.op_datum;
+      if (!m.diagnose_code && vorFall.meta.diagnose_code) {
+        m.diagnose_code = vorFall.meta.diagnose_code;
+        m.diagnose = vorFall.meta.diagnose;
+      }
+      if (!m.geschlecht) m.geschlecht = vorFall.meta.geschlecht;
+      m.vorbesuch = vorFall.meta.untersuchung_datum;
+    } else {
+      m.fall_nr = naechsteFallNr(m.patient_id);
+      m.vorbesuch = null;
+    }
+    m.visit_nr = naechsterBesuch(m.patient_id, m.fall_nr);
+    m.record_id = m.patient_id + '-' + m.fall_nr + '-' + m.visit_nr;
   },
 
   zeitraum() {
@@ -1270,11 +1596,16 @@ const App = {
       diagnose_code: a.in_diag || null,
       diagnose: d ? d.label : null
     });
-    if (a.in_op_ja != null) st.meta.op_datum = a.in_op_ja === 1 ? (a.in_op_datum || null) : null;
+    if (a.in_op_ja != null && !st.meta.op_datum) st.meta.op_datum = a.in_op_ja === 1 ? (a.in_op_datum || null) : null;
+    st.meta.region = a.in_region || st.meta.region || 'shoulder';
+    st.meta.fortsetzung = a.in_gleich != null ? a.in_gleich : null;
+    this.identitaet();
     this.zeitraum();
-    st.sel = boegenFuer(a.in_diag);
+    const dcode = st.meta.diagnose_code;
+    if (dcode && DIAG_BY_ID[dcode]) { st.meta.region = DIAG_BY_ID[dcode].region; st.meta.diagnose = DIAG_BY_ID[dcode].label; }
+    st.sel = boegenFuer(dcode);
     st.meta.boegen = st.sel.join(' ');
-    ['in_region', 'in_name', 'in_vorname', 'in_gebdat', 'in_sex', 'in_side', 'in_dom', 'in_diag', 'in_op_ja', 'in_op_datum']
+    ['in_region', 'in_name', 'in_vorname', 'in_gebdat', 'in_sex', 'in_side', 'in_dom', 'in_diag', 'in_op_ja', 'in_op_datum', 'in_gleich']
       .forEach(k => delete a[k]);
     st.phase = 'survey';
     this.buildPages();
@@ -1343,8 +1674,9 @@ const App = {
   renderItem(it, ctx) {
     const card = document.createElement('div');
     card.className = 'qcard';
-    const q = document.createElement('div'); q.className = 'qtext'; q.textContent = T(it.text, ctx); card.appendChild(q);
-    if (it.note) { const n = document.createElement('div'); n.className = 'qnote'; n.textContent = T(it.note, ctx); card.appendChild(n); }
+    const arg = this.state.phase === 'intake' ? this.state.answers : ctx;
+    const q = document.createElement('div'); q.className = 'qtext'; q.textContent = T(it.text, arg); card.appendChild(q);
+    if (it.note) { const n = document.createElement('div'); n.className = 'qnote'; n.textContent = T(it.note, arg); card.appendChild(n); }
     const sides = it.side ? ctx.sides : [null];
     sides.forEach(s => {
       if (s && ctx.sides.length > 1) {
@@ -1356,6 +1688,35 @@ const App = {
   },
 
   fid(it, side) { return side ? it.id + '_' + side : it.id; },
+
+  /* Wiedererkennung anhand der Angaben des Patienten */
+  personTreffer(a) {
+    if (!a.in_name || !a.in_gebdat) return null;
+    return findePerson(personKey({ nachname: a.in_name, vorname: a.in_vorname, geburtsdatum: a.in_gebdat }));
+  },
+
+  /* Vorbesuch nur, wenn Person, Gelenk und Seite übereinstimmen */
+  fallTreffer(a) {
+    if (!a.in_side) return null;
+    const person = this.personTreffer(a);
+    if (!person) return null;
+    return findeFall(person.meta.patient_id, a.in_region || 'shoulder', a.in_side);
+  },
+  fallBeschreibung(a) {
+    const t = this.fallTreffer(a);
+    if (!t) return '';
+    const seite = t.meta.seite === 'beide' ? 'beide Seiten' : (t.meta.seite === 're' ? 'rechts' : 'links');
+    return (t.meta.diagnose || REGIONWORT[t.meta.region]) + ', ' + seite +
+      ', zuletzt am ' + (t.meta.untersuchung_datum || '');
+  },
+  /* Fortsetzung nur, wenn der Patient sie bestätigt hat */
+  fortsetzung(a) {
+    const t = this.fallTreffer(a);
+    if (!t) return null;
+    return a.in_gleich === 0 ? null : t;
+  },
+  bekanntesOpDatum(a) { const t = this.fortsetzung(a); return t && t.meta.op_datum ? t.meta.op_datum : null; },
+  bekannteDiagnose(a) { const t = this.fortsetzung(a); return t && t.meta.diagnose_code ? t.meta.diagnose_code : null; },
 
   picRow(keys) {
     const d = document.createElement('div');
@@ -1473,7 +1834,7 @@ const App = {
       const val = document.createElement('div'); val.className = 'slider-val';
       const r = document.createElement('input');
       r.type = 'range'; r.min = it.min; r.max = it.max; r.step = 1;
-      r.value = a[fid] != null ? a[fid] : Math.round((it.min + it.max) / 2);
+      r.value = a[fid] != null ? a[fid] : (it.start != null ? it.start : Math.round((it.min + it.max) / 2));
       const show = () => val.textContent = (a[fid] != null ? a[fid] : '–') + (it.unit || '');
       show();
       const set = () => { a[fid] = parseInt(r.value, 10); show(); if (hint) hint.remove(); this.softUpdate(); };
@@ -1481,11 +1842,12 @@ const App = {
       box.appendChild(val); box.appendChild(r);
       const e = document.createElement('div'); e.className = 'scale-ends';
       e.innerHTML = '<span></span><span></span>';
-      e.children[0].textContent = it.min + (it.unit || ''); e.children[1].textContent = it.max + (it.unit || '');
+      e.children[0].textContent = it.ends ? it.ends[0] : it.min + (it.unit || '');
+      e.children[1].textContent = it.ends ? it.ends[1] : it.max + (it.unit || '');
       box.appendChild(e);
       if (a[fid] == null) {
         hint = document.createElement('p'); hint.className = 'hint';
-        hint.textContent = 'Bitte den Regler kurz bewegen, auch wenn der Wert schon passt.';
+        hint.textContent = 'Bitte den Regler bewegen oder die Linie an der passenden Stelle antippen.';
         box.appendChild(hint);
       }
     } else if (it.type === 'number') {
@@ -1515,6 +1877,7 @@ const App = {
   },
 
   softUpdate() {
+    if (document.getElementById('s-exam').classList.contains('on')) { this.pruefeVollstaendig(); return; }
     if (this.state.pages.length) this.updateNext();
     this.persistDraft();
   },
@@ -1548,16 +1911,28 @@ const App = {
     document.getElementById('sv-status').textContent = done ? '' : 'Bitte alle Fragen auf dieser Seite beantworten';
   },
 
+  leer(i) {
+    const p = this.state.pages[i];
+    return !p || this.visibleItems(p.page).length === 0;
+  },
+
   next() {
     const st = this.state;
     if (!this.pageComplete(st.pages[st.idx])) return;
-    if (st.idx === st.pages.length - 1) {
+    let i = st.idx + 1;
+    while (i < st.pages.length && this.leer(i)) i++;
+    if (i >= st.pages.length) {
       if (st.phase === 'intake') { this.finishIntake(); return; }
       this.go('s-thanks'); this.persistDraft(); return;
     }
-    st.idx++; this.persistDraft(); this.render();
+    st.idx = i; this.persistDraft(); this.render();
   },
-  prev() { if (this.state.idx > 0) { this.state.idx--; this.render(); } },
+
+  prev() {
+    let i = this.state.idx - 1;
+    while (i > 0 && this.leer(i)) i--;
+    if (i >= 0 && !this.leer(i)) { this.state.idx = i; this.render(); }
+  },
 
   /* ---- Ausstieg für das Personal ---- */
   escapeHatch() {
@@ -1598,8 +1973,12 @@ const App = {
     if (!st.meta) { this.renderAdmin(); this.go('s-admin'); return; }
     const body = document.getElementById('ex-body');
     body.innerHTML = '';
-    document.getElementById('ex-sub').textContent = st.meta.record_id;
+    document.getElementById('ex-sub').textContent =
+      st.meta.record_id + (st.meta.visit_nr > 1 ? ' · Nachuntersuchung' : ' · Erstvorstellung');
     const ctx = this.ctx();
+
+    body.appendChild(this.identBox());
+
     if (!st.examPages.length) {
       const p = document.createElement('p'); p.className = 'lead';
       p.textContent = 'Für diese Zusammenstellung ist kein Untersucherteil vorgesehen.';
@@ -1611,26 +1990,140 @@ const App = {
       if (e.page.pics) body.appendChild(this.picRow(e.page.pics));
       this.visibleItems(e.page).forEach(it => body.appendChild(this.renderItem(it, ctx)));
     });
+    this.pruefeVollstaendig();
     this.go('s-exam');
   },
-  skipExam() { this.finish(); },
-  saveExam() { this.finish(); },
+
+  identBox() {
+    const m = this.state.meta;
+    const d = document.createElement('div');
+    d.className = 'qcard';
+    const name = [m.nachname, m.vorname].filter(Boolean).join(', ') || 'ohne Namen';
+    let t = '<div class="qtext">' + esc(name) + ', geboren ' + (m.geburtsdatum || 'unbekannt') + '</div>' +
+      '<div class="qnote">' + esc(m.record_id || '') + ' · Patient ' + esc(m.patient_id || '') +
+      ' · Fall ' + (m.fall_nr || 1) + ' (' + REGIONWORT[m.region] + ' ' +
+      (m.seite === 'beide' ? 'beidseits' : (m.seite === 're' ? 'rechts' : 'links')) + ')' +
+      ' · Besuch ' + (m.visit_nr || 1) +
+      (m.vorbesuch ? ', letzter Besuch am ' + m.vorbesuch : ', neuer Fall') +
+      (m.diagnose ? ' · ' + esc(m.diagnose) : '') + '</div>';
+    d.innerHTML = t;
+    const dubl = moeglicheDubletten(m);
+    if (dubl.length && m.visit_nr === 1) {
+      const w = document.createElement('div');
+      w.className = 'notice';
+      w.style.margin = '14px 0 0';
+      w.textContent = 'Achtung: ' + dubl.map(x => x.pid + ' (' + [x.meta.nachname, x.meta.vorname].filter(Boolean).join(', ') + ')').join(', ') +
+        ' hat dasselbe Geburtsdatum. Möglicherweise dieselbe Person mit anders geschriebenem Namen. Unten zuordnen, sonst entsteht ein zweiter Verlauf.';
+      d.appendChild(w);
+    }
+    const liste = personenListe().filter(x => x.pid !== m.patient_id);
+    if (liste.length) {
+      const lab = document.createElement('div'); lab.className = 'qnote';
+      lab.textContent = 'Falsche Person? Hier einem bestehenden Patienten zuordnen.';
+      const sel = document.createElement('select');
+      sel.innerHTML = '<option value="">Zuordnung beibehalten</option>';
+      liste.forEach(x => {
+        const o = document.createElement('option');
+        o.value = x.pid;
+        o.textContent = x.pid + ' · ' + [x.meta.nachname, x.meta.vorname].filter(Boolean).join(', ') +
+          ' · ' + (x.meta.geburtsdatum || '') + ' · ' + x.besuche + ' Besuche';
+        sel.appendChild(o);
+      });
+      sel.onchange = () => { if (sel.value) this.umhaengen(sel.value); };
+      d.appendChild(lab); d.appendChild(sel);
+    }
+    return d;
+  },
+
+  umhaengen(pid) {
+    const ziel = personenListe().find(x => x.pid === pid);
+    if (!ziel) return;
+    const m = this.state.meta;
+    m.patient_id = pid;
+    m.person_key = ziel.meta.person_key;
+    m.nachname = ziel.meta.nachname;
+    m.vorname = ziel.meta.vorname;
+    m.geburtsdatum = ziel.meta.geburtsdatum;
+    const vorFall = findeFall(pid, m.region, m.seite);
+    m.fall_nr = vorFall ? (vorFall.meta.fall_nr || 1) : naechsteFallNr(pid);
+    m.visit_nr = naechsterBesuch(pid, m.fall_nr);
+    m.record_id = pid + '-' + m.fall_nr + '-' + m.visit_nr;
+    m.vorbesuch = vorFall ? vorFall.meta.untersuchung_datum : null;
+    this.zeitraum();
+    this.openExam();
+  },
+
+  fehlendeBefunde() {
+    const st = this.state, ctx = this.ctx(), a = st.answers, fehlt = [];
+    st.examPages.forEach(e => {
+      this.visibleItems(e.page).forEach(it => {
+        if (it.optional) return;
+        const sides = it.side ? ctx.sides : [null];
+        sides.forEach(sd => {
+          const v = a[this.fid(it, sd)];
+          if (it.type === 'multi') {
+            const any = it.opts.some(o => a[it.id + '_' + o.v + (sd ? '_' + sd : '')]) || a[this.fid(it, sd) + '_0'];
+            if (!any) fehlt.push(T(it.text, ctx));
+          } else if (v == null || v === '') fehlt.push(T(it.text, ctx) + (sd ? ' (' + (sd === 're' ? 'rechts' : 'links') + ')' : ''));
+        });
+      });
+    });
+    return fehlt;
+  },
+
+  pruefeVollstaendig() {
+    const f = this.fehlendeBefunde();
+    const el = document.getElementById('ex-status');
+    el.textContent = f.length === 0 ? 'Befund vollständig' : f.length + ' Angabe' + (f.length === 1 ? '' : 'n') + ' fehlt noch';
+    el.style.color = f.length === 0 ? '#0d6b6b' : '';
+  },
+
+  skipExam() { this.finish(true); },
+
+  saveExam() {
+    const f = this.fehlendeBefunde();
+    if (f.length) {
+      const liste = f.slice(0, 6).join(', ') + (f.length > 6 ? ' und weitere' : '');
+      if (!confirm('Es fehlen noch ' + f.length + ' Angaben: ' + liste + '. Trotzdem speichern? Der Fall wird als unvollständig markiert und lässt sich später nachtragen.')) return;
+    }
+    this.finish(false);
+  },
 
   finish() {
     const st = this.state, ctx = this.ctx();
     this.ableiten(ctx);
     const scores = {};
     st.sel.forEach(id => Object.assign(scores, BY_ID[id].score(st.answers, ctx) || {}));
-    Store.data.records.push({
-      id: 'r' + Date.now(),
-      meta: st.meta, answers: st.answers, scores: scores, gespeichert: new Date().toISOString()
-    });
+    st.meta.vollstaendig = this.fehlendeBefunde().length === 0 ? 1 : 0;
+    if (this.editing) {
+      const r = Store.data.records.find(x => x.id === this.editing);
+      if (r) { r.meta = st.meta; r.answers = st.answers; r.scores = scores; r.geaendert = new Date().toISOString(); }
+      this.editing = null;
+    } else {
+      Store.data.records.push({
+        id: 'r' + Date.now(),
+        meta: st.meta, answers: st.answers, scores: scores, gespeichert: new Date().toISOString()
+      });
+    }
     Store.data.draft = null;
     Store.save();
     st.meta = null; st.answers = {}; st.pages = []; st.idx = 0;
     this.updateHome();
     this.renderAdmin();
     this.go('s-admin');
+  },
+
+  /* Befund eines gespeicherten Falls nachtragen */
+  nachtragen(id) {
+    const r = Store.data.records.find(x => x.id === id);
+    if (!r) return;
+    this.state.meta = JSON.parse(JSON.stringify(r.meta));
+    this.state.answers = JSON.parse(JSON.stringify(r.answers));
+    this.state.sel = (r.meta.boegen || '').split(' ').filter(x => BY_ID[x]);
+    this.state.phase = 'survey';
+    this.buildPages();
+    this.editing = id;
+    this.openExam();
   },
 
   /* Werte, die aus anderen Antworten übernommen werden */
@@ -1673,7 +2166,7 @@ const App = {
     if (!recs.length) { t.innerHTML = '<p class="hint">Noch keine Erhebungen gespeichert.</p>'; return; }
     const zeigeName = Store.data.settings.ids;
     let h = '<table><tr><th>Fall</th>' + (zeigeName ? '<th>Name</th>' : '') +
-      '<th>Untersuchung</th><th>Seit OP</th><th>Diagnose</th><th>Ergebnisse</th><th></th></tr>';
+      '<th>Untersuchung</th><th>Seit OP</th><th>Diagnose</th><th>Status</th><th></th></tr>';
     recs.slice().reverse().forEach(r => {
       const chips = Object.keys(r.scores).filter(k => r.scores[k] != null).slice(0, 4)
         .map(k => '<span class="pill">' + labelForScore(k) + ' ' + r.scores[k] + '</span>').join('');
@@ -1681,7 +2174,10 @@ const App = {
       h += '<tr><td>' + esc(r.meta.record_id) + '</td>' + nm +
         '<td>' + (r.meta.untersuchung_datum || '') + '</td>' +
         '<td>' + (r.meta.zeitfenster || '') + '</td>' +
-        '<td>' + esc(r.meta.diagnose || '–') + '</td><td>' + chips + '</td>' +
+        '<td>' + esc(r.meta.diagnose || '–') + '</td>' +
+        '<td>' + (r.meta.vollstaendig === 0
+          ? '<span class="pill warnpill">Befund fehlt</span>'
+          : '<span class="pill">vollständig</span>') + '</td>' +
         '<td><button class="btn quiet" style="min-height:40px;padding:0 14px" onclick="App.detail(\'' + r.id + '\')">Details</button></td></tr>';
     });
     t.innerHTML = h + '</table>';
@@ -1690,7 +2186,8 @@ const App = {
   detail(id) {
     const r = Store.data.records.find(x => x.id === id);
     if (!r) return;
-    document.getElementById('dt-title').textContent = 'Erhebung ' + r.meta.record_id;
+    document.getElementById('dt-title').textContent = 'Erhebung ' + r.meta.record_id +
+      (r.meta.vollstaendig === 0 ? ' (Befund unvollständig)' : '');
     const b = document.getElementById('dt-body');
     let h = '<div class="section"><h3>Fall</h3><table>';
     Object.keys(r.meta).forEach(k => h += '<tr><th style="width:200px">' + k + '</th><td>' + esc(String(r.meta[k])) + '</td></tr>');
@@ -1698,7 +2195,9 @@ const App = {
     Object.keys(r.scores).forEach(k => h += '<tr><th style="width:260px">' + k + '</th><td>' + (r.scores[k] == null ? 'nicht berechenbar' : r.scores[k]) + '</td></tr>');
     h += '</table></div><div class="section"><h3>Einzelantworten</h3><table>';
     Object.keys(r.answers).forEach(k => h += '<tr><th style="width:260px">' + k + '</th><td>' + esc(String(r.answers[k])) + '</td></tr>');
-    h += '</table></div><div class="row"><button class="btn danger" onclick="App.del(\'' + r.id + '\')">Diese Erhebung löschen</button></div>';
+    h += '</table></div><div class="row">' +
+      '<button class="btn ghost" onclick="App.nachtragen(\'' + r.id + '\')">Befund nachtragen oder ändern</button>' +
+      '<button class="btn danger" onclick="App.del(\'' + r.id + '\')">Diese Erhebung löschen</button></div>';
     b.innerHTML = h;
     this.go('s-detail');
   },
@@ -1725,10 +2224,11 @@ function labelForScore(k) {
 /* ---------------------------------------------------------------
    5. Feldkatalog und Export
    --------------------------------------------------------------- */
-const META_FIELDS = ['record_id', 'untersuchung_datum', 'uhrzeit', 'op_datum', 'tage_seit_op', 'monate_seit_op',
-  'zeitfenster', 'geburtsdatum', 'alter', 'geschlecht', 'seite', 'dominant',
-  'diagnose_code', 'diagnose', 'region', 'boegen', 'nachname', 'vorname'];
-const ID_FIELDS = ['nachname', 'vorname', 'geburtsdatum'];
+const META_FIELDS = ['record_id', 'patient_id', 'fall_nr', 'visit_nr', 'untersuchung_datum', 'uhrzeit', 'op_datum',
+  'tage_seit_op', 'monate_seit_op', 'zeitfenster', 'alter', 'geschlecht', 'seite', 'dominant',
+  'diagnose_code', 'diagnose', 'region', 'boegen', 'notiz', 'vollstaendig',
+  'nachname', 'vorname', 'geburtsdatum', 'person_key'];
+const ID_FIELDS = ['nachname', 'vorname', 'geburtsdatum', 'person_key'];
 
 function fieldCatalog() {
   /* Alle möglichen Felder, beide Seiten, in Definitionsreihenfolge */
@@ -1784,6 +2284,8 @@ function csv(cols, rows, sep) {
   return '\uFEFF' + [cols.map(q).join(sep)].concat(rows.map(r => r.map(q).join(sep))).join('\r\n');
 }
 
+function merkeExport() { Store.data.lastExport = heute(); Store.save(); App.updateHome(); }
+
 function download(name, text, type) {
   const blob = new Blob([text], { type: (type || 'text/csv') + ';charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -1797,12 +2299,12 @@ const Exporter = {
   excelCsv() {
     if (!Store.data.records.length) return alert('Keine Daten vorhanden.');
     const m = buildMatrix();
-    download('scores_' + this.stamp() + '.csv', csv(m.cols, m.rows, ';'));
+    download('scores_' + this.stamp() + '.csv', csv(m.cols, m.rows, ';')); merkeExport();
   },
   redcapData() {
     if (!Store.data.records.length) return alert('Keine Daten vorhanden.');
     const m = buildMatrix();
-    download('redcap_daten_' + this.stamp() + '.csv', csv(m.cols, m.rows, ','));
+    download('redcap_daten_' + this.stamp() + '.csv', csv(m.cols, m.rows, ',')); merkeExport();
   },
   redcapDict() {
     const head = ['Variable / Field Name', 'Form Name', 'Section Header', 'Field Type', 'Field Label',
@@ -1812,7 +2314,11 @@ const Exporter = {
     const rows = [];
     const ctx = { region: 'shoulder', sides: ['re', 'li'] };
     rows.push(['record_id', 'stammdaten', '', 'text', 'Fall-Nummer', '', '', '', '', '', 'y', '', '', '', '', '', '', '']);
-    [['untersuchung_datum', 'Untersuchungsdatum', 'text', 'date_ymd'], ['uhrzeit', 'Uhrzeit', 'text', 'time'],
+    [['patient_id', 'Patienten-Nummer', 'text', ''], ['fall_nr', 'Fallnummer je Patient', 'text', 'integer'],
+     ['visit_nr', 'Besuchsnummer im Fall', 'text', 'integer'],
+     ['notiz', 'Notiz', 'text', ''], ['vollstaendig', 'Befund vollstaendig', 'text', 'integer'],
+     ['person_key', 'Personenschluessel', 'text', ''],
+     ['untersuchung_datum', 'Untersuchungsdatum', 'text', 'date_ymd'], ['uhrzeit', 'Uhrzeit', 'text', 'time'],
      ['op_datum', 'Operationsdatum', 'text', 'date_ymd'], ['tage_seit_op', 'Tage seit Operation', 'text', 'integer'],
      ['monate_seit_op', 'Monate seit Operation', 'text', 'number'], ['zeitfenster', 'Nachuntersuchungsfenster', 'text', ''],
      ['geburtsdatum', 'Geburtsdatum', 'text', 'date_ymd'], ['alter', 'Alter bei Untersuchung', 'text', 'integer'],
@@ -1838,7 +2344,7 @@ const Exporter = {
     download('redcap_datenwoerterbuch_' + this.stamp() + '.csv', csv(head, rows, ','));
   },
   json() {
-    download('sicherung_' + this.stamp() + '.json', JSON.stringify(Store.data, null, 1), 'application/json');
+    download('sicherung_' + this.stamp() + '.json', JSON.stringify(Store.data, null, 1), 'application/json'); merkeExport();
   },
   importJson(ev) {
     const f = ev.target.files[0]; if (!f) return;
