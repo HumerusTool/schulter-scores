@@ -81,6 +81,8 @@ p.lead{color:var(--ink-soft);margin:0 0 28px;max-width:60ch}
 .imgopt img{width:100%;height:auto;border-radius:6px;display:block;filter:contrast(1.05)}
 .imgopt .cap{display:block;font-size:15px;line-height:1.25;margin-top:8px}
 .imgopt.sel{border-color:var(--accent);background:var(--accent-soft)}
+.imgopt .svgwrap{display:block;background:#f7f9f9;border-radius:6px;padding:4px}
+.imgopt .svgwrap svg{width:100%;height:auto;display:block}
 .imgopt .noimg{display:flex;align-items:center;justify-content:center;aspect-ratio:1/1.7;background:#eef1f2;border-radius:6px;color:var(--ink-soft);font-size:14px;padding:6px}
 .picrow{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 22px}
 .picrow img{max-width:300px;width:100%;border-radius:8px;border:1px solid var(--line)}
@@ -249,10 +251,27 @@ a{color:var(--accent)}
   <div class="wrap" id="sv-body"></div>
   <div class="foot">
     <button class="btn quiet" id="sv-back" onclick="App.prev()">Zurück</button>
+    <button class="btn quiet" id="sv-abort" onclick="App.abbruchMenu()">Abbrechen</button>
     <span class="status" id="sv-status"></span>
     <button class="btn" id="sv-next" onclick="App.next()">Weiter</button>
   </div>
   <button class="corner" onclick="App.escapeHatch()" aria-label="Personalbereich"></button>
+</section>
+
+<!-- ===== Abbruch ===== -->
+<section id="s-abort" class="screen">
+  <div class="wrap narrow" style="padding-top:40px">
+    <h1>Befragung unterbrechen</h1>
+    <p class="lead" id="ab-info"></p>
+    <button class="btn wide ghost" onclick="App.abbruchWeiter()">Weiter ausfüllen</button>
+    <div style="height:12px"></div>
+    <button class="btn wide ghost" onclick="App.bogenUeberspringen()" id="ab-skip">Diesen Bogen überspringen</button>
+    <div style="height:12px"></div>
+    <button class="btn wide" onclick="App.abbruchBeenden()">Befragung beenden und das Bisherige speichern</button>
+    <div style="height:12px"></div>
+    <button class="btn wide danger" onclick="App.abbruchVerwerfen()">Befragung verwerfen</button>
+    <p class="hint" style="margin-top:22px">Beim Speichern werden alle bereits beantworteten Fragen behalten. Scores, für die Angaben fehlen, bleiben leer und lassen sich später nicht nachtragen, weil der Patient sie beantworten müsste.</p>
+  </div>
 </section>
 
 <!-- ===== Abschluss Patient ===== -->
@@ -260,8 +279,10 @@ a{color:var(--accent)}
   <div class="center"><div class="inner">
     <div class="mark"></div>
     <h1>Vielen Dank</h1>
-    <p class="lead">Die Befragung ist abgeschlossen. Bitte geben Sie das Tablet zurück.</p>
-    <button class="btn ghost" onclick="App.openAdminFromThanks()">Weiter zum Untersuchungsteil</button>
+    <p class="lead">Ihre Angaben sind gespeichert. Bitte geben Sie das Tablet an der Anmeldung zurück.</p>
+    <button class="btn wide" onclick="App.naechstePatient()">Nächste Befragung starten</button>
+    <div style="height:12px"></div>
+    <button class="btn ghost wide" onclick="App.openAdminFromThanks()">Personalbereich</button>
   </div></div>
 </section>
 
@@ -301,6 +322,10 @@ a{color:var(--accent)}
   </div></div>
   <div class="wrap">
     <div id="admin-warn"></div>
+    <div class="section">
+      <h3>Offene Befunde</h3>
+      <div id="offen-box"></div>
+    </div>
     <div class="section">
       <h3>Einstellungen</h3>
       <div id="settings-box"></div>
@@ -594,27 +619,40 @@ const INSTRUMENTS = [
                O(4, 'Hand im Nacken, Ellenbogen zur Seite', 'aro4'),
                O(6, 'Hand auf dem Scheitel, Ellenbogen nach vorne', 'aro6'),
                O(8, 'Hand auf dem Scheitel, Ellenbogen zur Seite', 'aro8'),
-               O(10, 'Arm gestreckt über dem Kopf', 'aro10')] }] }
+               O(10, 'Arm gestreckt über dem Kopf', 'aro10')] }] },
+    { title: 'Kraft', pics: ['kraft1', 'kraft2'],
+      intro: 'Stellen Sie sich vor, Sie halten eine Tasche mit 1-Liter-Packungen, zum Beispiel Milchtüten oder Wasserflaschen. Der Arm ist gestreckt und seitlich im rechten Winkel vom Körper abgespreizt, leicht nach vorne, so wie auf den Bildern.',
+      items: [
+        { id: 'cs_kraft_moeglich', type: 'radio', side: true, rerender: true,
+          text: 'Könnten Sie den Arm überhaupt in diese Stellung bringen und dort halten?',
+          opts: [O(1, 'Ja'), O(0, 'Nein, das schaffe ich nicht')] },
+        { id: 'cs_tetra', type: 'scale', min: 0, max: 12, side: true,
+          text: 'Wie viele 1-Liter-Packungen könnten Sie in dieser Stellung 5 Sekunden halten?',
+          note: 'Eine Schätzung genügt. Eine 1-Liter-Packung entspricht einem Kilogramm. Bei mehr als zwölf bitte zwölf wählen.',
+          ends: ['keine', '12 oder mehr'],
+          showIf: a => a.cs_kraft_moeglich_re === 1 || a.cs_kraft_moeglich_li === 1 }
+      ] }
   ],
-  exam: [{
-    title: 'Constant: Kraftmessung',
-    intro: 'Tasche mit Gewichten (1-Liter-Packungen) bei 90 Grad Abduktion leicht vor dem Körper 5 Sekunden halten. Arm durchgestreckt, Handrücken nach oben, etwa 20 Grad vor der Frontalebene. Bestes Ergebnis aus drei Versuchen eintragen. 0 eintragen, wenn die Testposition nicht erreicht wird.',
-    pics: ['kraft1', 'kraft2'],
-    items: [{ id: 'cs_kraft', type: 'number', unit: 'kg', min: 0, max: 40, step: 0.5, side: true, text: 'Gehaltenes Gewicht' }]
-  }],
+  exam: [],
   score: (a, ctx) => {
     const o = {};
     ctx.sides.forEach(s => {
       const g = k => a[k + '_' + s];
+      if (g('cs_flex') != null) o['sc_rom_' + s + '_ante_grad'] = GRAD_MITTE[g('cs_flex')];
+      if (g('cs_abd') != null) o['sc_rom_' + s + '_abd_grad'] = GRAD_MITTE[g('cs_abd')];
+      if (g('cs_iro') != null) o['sc_rom_' + s + '_iro_stufe'] = g('cs_iro');
+      if (g('cs_aro') != null) o['sc_rom_' + s + '_aro_stufe'] = g('cs_aro');
       const pain = g('cs_pain') == null ? null : 15 - g('cs_pain');
       const teile = [pain, g('cs_beruf'), g('cs_freizeit'), g('cs_hoehe'), g('cs_schlaf'),
                      g('cs_flex'), g('cs_abd'), g('cs_iro'), g('cs_aro')];
       if (teile.some(x => x == null)) return;
       const ohneKraft = teile.reduce((x, y) => x + y, 0);
-      const kp = kraftPunkte(g('cs_kraft'));
+      const kp = g('cs_kraft_moeglich') === 0 ? 0
+        : (g('cs_kraft_moeglich') === 1 ? kraftPunkte(g('cs_tetra')) : null);
       o['sc_cs_' + s + '_ohnekraft'] = ohneKraft;
       if (kp != null) {
         o['sc_cs_' + s + '_kraftpunkte'] = kp;
+        o['sc_cs_' + s + '_kraft_quelle'] = 'schaetzung';
         const total = ohneKraft + kp;
         o['sc_cs_' + s + '_total'] = total;
         const norm = constantNorm(ctx.alter, ctx.sex);
@@ -840,6 +878,7 @@ const INSTRUMENTS = [
       { id: 'meps_pain', type: 'radio', side: true, text: 'Wie stark waren Ihre Schmerzen im Ellenbogen?',
         opts: [O(45, 'Keine'), O(30, 'Leicht'), O(15, 'Mäßig'), O(0, 'Stark')] },
       { id: 'meps_rom', type: 'radio', side: true, text: 'Wie schätzen Sie Ihren Bewegungsumfang ein?',
+        skip: (sel) => sel.indexOf('elbrom') >= 0,
         opts: [O(20, 'Mehr als 100 Grad'), O(15, '50 bis 100 Grad'), O(5, 'Weniger als 50 Grad')] },
       { id: 'meps_stab', type: 'radio', side: true, text: 'Wie stabil ist Ihr Ellenbogengelenk?',
         opts: [O(10, 'Stabil'), O(5, 'Mäßig stabil'), O(0, 'Extrem instabil')] },
@@ -919,6 +958,71 @@ const INSTRUMENTS = [
   }
 },
 
+/* ---- Beweglichkeit Ellenbogen, Selbstangabe mit Zeichnungen ---- */
+{
+  id: 'elbrom', name: 'Beweglichkeit Ellenbogen (Selbstangabe)', region: 'elbow',
+  pages: [
+    { title: 'Arm strecken', intro: 'Legen Sie den Oberarm locker an den Körper. Strecken Sie den Unterarm so weit wie möglich nach unten.', items: [{
+      id: 'elb_ext', type: 'imgradio', side: true,
+      text: 'Wie weit können Sie den Arm strecken?',
+      note: 'Wählen Sie das Bild, das Ihrer größtmöglichen Streckung entspricht. Der grüne Punkt ist der Ellenbogen.',
+      opts: [
+        { v: 0, l: 'Ganz gerade', svg: armSVG(0) },
+        { v: 10, l: 'Fast gerade, ein kleiner Rest bleibt', svg: armSVG(10) },
+        { v: 20, l: 'Deutlich gebeugt', svg: armSVG(20) },
+        { v: 30, l: 'Stark gebeugt', svg: armSVG(30) },
+        { v: 45, l: 'Bleibt sehr stark gebeugt', svg: armSVG(45) }
+      ] }] },
+    { title: 'Arm beugen', intro: 'Führen Sie die Hand so weit wie möglich zur Schulter.', items: [{
+      id: 'elb_flex', type: 'imgradio', side: true,
+      text: 'Wie weit können Sie den Arm beugen?',
+      opts: [
+        { v: 150, l: 'Hand berührt die Schulter', svg: armSVG(150) },
+        { v: 130, l: 'Hand kommt fast an die Schulter', svg: armSVG(130) },
+        { v: 110, l: 'Etwas mehr als rechter Winkel', svg: armSVG(110) },
+        { v: 90, l: 'Etwa rechter Winkel', svg: armSVG(90) },
+        { v: 70, l: 'Weniger als ein rechter Winkel', svg: armSVG(70) }
+      ] }] },
+    { title: 'Handfläche nach oben drehen', intro: 'Halten Sie den Ellenbogen im rechten Winkel eng am Körper und drehen Sie die Handfläche nach oben.', items: [{
+      id: 'elb_sup', type: 'imgradio', side: true,
+      text: 'Wie weit können Sie die Handfläche nach oben drehen?',
+      note: 'Die Zeichnung zeigt die Hand von vorne. Die grüne Kante ist die Handfläche, der Punkt der Daumen.',
+      opts: [
+        { v: 90, l: 'Handfläche zeigt ganz nach oben', svg: handSVG(90) },
+        { v: 60, l: 'Handfläche schräg nach oben', svg: handSVG(60) },
+        { v: 30, l: 'Nur wenig nach oben', svg: handSVG(30) },
+        { v: 0, l: 'Keine Drehung möglich, Daumen bleibt oben', svg: handSVG(0) }
+      ] }] },
+    { title: 'Handfläche nach unten drehen', intro: 'Ellenbogen weiter im rechten Winkel am Körper, jetzt die Handfläche nach unten drehen.', items: [{
+      id: 'elb_pro', type: 'imgradio', side: true,
+      text: 'Wie weit können Sie die Handfläche nach unten drehen?',
+      opts: [
+        { v: 90, l: 'Handfläche zeigt ganz nach unten', svg: handSVG(-90) },
+        { v: 60, l: 'Handfläche schräg nach unten', svg: handSVG(-60) },
+        { v: 30, l: 'Nur wenig nach unten', svg: handSVG(-30) },
+        { v: 0, l: 'Keine Drehung möglich, Daumen bleibt oben', svg: handSVG(0) }
+      ] }] }
+  ],
+  score: function (a, ctx) {
+    const o = {};
+    ctx.sides.forEach(function (s) {
+      const ext = a['elb_ext_' + s], flex = a['elb_flex_' + s];
+      const sup = a['elb_sup_' + s], pro = a['elb_pro_' + s];
+      if (ext != null && flex != null) {
+        o['sc_elb_' + s + '_streckdefizit'] = ext;
+        o['sc_elb_' + s + '_beugung'] = flex;
+        o['sc_elb_' + s + '_ef_bogen'] = Math.max(0, flex - ext);
+      }
+      if (sup != null && pro != null) {
+        o['sc_elb_' + s + '_supination'] = sup;
+        o['sc_elb_' + s + '_pronation'] = pro;
+        o['sc_elb_' + s + '_ps_bogen'] = sup + pro;
+      }
+    });
+    return o;
+  }
+},
+
 /* ---- Klinischer Untersuchungsbogen, kompakt ---- */
 {
   id: 'unt', name: 'Klinischer Untersuchungsbogen Schulter', region: 'shoulder', examOnly: true,
@@ -985,6 +1089,7 @@ const INSTRUMENTS = [
       const kp = kraftPunkte(g('ux_tetra'));
       if (kp != null) {
         o['sc_cs_' + s + '_kraftpunkte'] = kp;
+        o['sc_cs_' + s + '_kraft_quelle'] = 'schaetzung';
         const total = ohneKraft + kp;
         o['sc_cs_' + s + '_total'] = total;
         const norm = constantNorm(ctx.alter, ctx.sex);
@@ -1217,6 +1322,39 @@ const PRESETS = [
 ];
 
 
+/* Einfache Strichzeichnungen für die Selbstangabe der Beweglichkeit */
+function armSVG(flex) {
+  const rad = flex * Math.PI / 180;
+  const ex = 74, ey = 62, len = 46;
+  const hx = ex - Math.sin(rad) * len, hy = ey + Math.cos(rad) * len;
+  const bogenR = 22;
+  const b1x = ex, b1y = ey + bogenR;
+  const b2x = ex - Math.sin(rad) * bogenR, b2y = ey + Math.cos(rad) * bogenR;
+  const gross = flex > 180 ? 1 : 0;
+  return '<svg viewBox="0 0 120 124" xmlns="http://www.w3.org/2000/svg" role="img">' +
+    '<rect x="80" y="4" width="26" height="112" rx="12" fill="#dfe6e9"/>' +
+    '<path d="M' + b1x + ' ' + b1y + ' A' + bogenR + ' ' + bogenR + ' 0 ' + gross + ' 1 ' + b2x + ' ' + b2y + '" fill="none" stroke="#0d6b6b" stroke-width="2" stroke-dasharray="3 3"/>' +
+    '<line x1="' + ex + '" y1="' + ey + '" x2="' + ex + '" y2="' + (ey + len) + '" stroke="#9fb0b6" stroke-width="2" stroke-dasharray="4 4"/>' +
+    '<line x1="74" y1="16" x2="' + ex + '" y2="' + ey + '" stroke="#16212b" stroke-width="8" stroke-linecap="round"/>' +
+    '<line x1="' + ex + '" y1="' + ey + '" x2="' + hx + '" y2="' + hy + '" stroke="#16212b" stroke-width="8" stroke-linecap="round"/>' +
+    '<circle cx="74" cy="16" r="6" fill="#16212b"/>' +
+    '<circle cx="' + ex + '" cy="' + ey + '" r="6" fill="#0d6b6b"/>' +
+    '<circle cx="' + hx + '" cy="' + hy + '" r="5" fill="#16212b"/>' +
+    '</svg>';
+}
+
+function handSVG(rot) {
+  return '<svg viewBox="0 0 120 124" xmlns="http://www.w3.org/2000/svg" role="img">' +
+    '<circle cx="60" cy="62" r="36" fill="#dfe6e9"/>' +
+    '<g transform="rotate(' + rot + ' 60 62)">' +
+    '<rect x="55" y="36" width="13" height="54" rx="5" fill="#16212b"/>' +
+    '<rect x="49" y="36" width="6" height="54" rx="3" fill="#0d6b6b"/>' +
+    '<circle cx="52" cy="32" r="7" fill="#16212b"/>' +
+    '</g></svg>';
+}
+
+const GRAD_MITTE = { 0: 15, 2: 45, 4: 75, 6: 105, 8: 135, 10: 165 };
+
 /* Bausteine für die Fragebögen mit visueller Analogskala */
 function vas(id, text, links, rechts) {
   return { id: id, type: 'slider', min: 0, max: 100, start: 0, text: text, ends: [links, rechts] };
@@ -1240,7 +1378,7 @@ function vasScore(a, prefix, n, max) {
 /* ---------------------------------------------------------------
    2b. Diagnosen und zugehörige Bögen
    --------------------------------------------------------------- */
-const BOGEN_REIHENFOLGE = ['ssv', 'sev', 'vas15', 'cs', 'unt', 'ases', 'sst', 'rowe', 'oss', 'spadi', 'wosi', 'worc', 'woos', 'meps', 'oes', 'prtee', 'dash', 'eq5d', 'taft', 'romsh', 'romel'];
+const BOGEN_REIHENFOLGE = ['ssv', 'sev', 'vas15', 'cs', 'unt', 'elbrom', 'ases', 'sst', 'rowe', 'oss', 'spadi', 'wosi', 'worc', 'woos', 'meps', 'oes', 'prtee', 'dash', 'eq5d', 'taft', 'romsh', 'romel'];
 
 const DIAGNOSES = [
   { id: 'rm_ruptur', region: 'shoulder', label: 'Riss einer Sehne der Rotatorenmanschette', ids: ['cs', 'ases', 'worc'] },
@@ -1270,13 +1408,13 @@ const DIAGNOSES = [
 const DIAG_BY_ID = {}; DIAGNOSES.forEach(d => DIAG_BY_ID[d.id] = d);
 
 /* Immer erhoben, unabhängig von der Diagnose */
-const IMMER = { shoulder: ['ssv', 'dash', 'eq5d', 'romsh'], elbow: ['sev', 'dash', 'eq5d', 'romel'] };
+const IMMER = { shoulder: ['ssv', 'dash', 'eq5d'], elbow: ['sev', 'elbrom', 'dash', 'eq5d'] };
 
 function boegenFuer(diagId) {
   const d = DIAG_BY_ID[diagId];
   if (!d) return [];
   const set = new Set(d.ids.concat(IMMER[d.region]));
-  if (Store.data.settings.examConstant && set.has('cs')) { set.delete('cs'); set.add('unt'); set.delete('romsh'); }
+  if (Store.data.settings.examConstant && set.has('cs')) { set.delete('cs'); set.add('unt'); }
   return BOGEN_REIHENFOLGE.filter(x => set.has(x));
 }
 
@@ -1332,12 +1470,12 @@ function intakePages(opDatumBekannt) {
 const Store = {
   key: 'ueScores.v1',
   ok: true,
-  data: { pin: '1234', records: [], draft: null, settings: { ids: true, mergePain: false, examConstant: false } },
+  data: { pin: '1234', records: [], draft: null, settings: { ids: true, mergePain: false, examConstant: false, examLater: true } },
   load() {
     try {
       const raw = localStorage.getItem(this.key);
       if (raw) this.data = Object.assign(this.data, JSON.parse(raw));
-      this.data.settings = Object.assign({ ids: true, mergePain: false, examConstant: false }, this.data.settings || {});
+      this.data.settings = Object.assign({ ids: true, mergePain: false, examConstant: false, examLater: true }, this.data.settings || {});
       localStorage.setItem(this.key + '.probe', '1');
       localStorage.removeItem(this.key + '.probe');
     } catch (e) { this.ok = false; }
@@ -1500,7 +1638,8 @@ const App = {
       op_datum: opd, tage_seit_op: null, monate_seit_op: null, zeitfenster: null,
       seite: 're', dominant: 're',
       diagnose_code: null, diagnose: null,
-      region: 'shoulder', boegen: '', notiz: document.getElementById('f-notiz').value.trim() || null
+      region: 'shoulder', boegen: '', abgebrochen: 0, uebersprungen: null,
+      notiz: document.getElementById('f-notiz').value.trim() || null
     };
     this.state.answers = {};
     this.unlocked = false;
@@ -1659,6 +1798,7 @@ const App = {
       : (st.idx + 1) + ' von ' + st.pages.length;
     document.getElementById('sv-bar').style.width = (st.idx / st.pages.length * 100) + '%';
     document.getElementById('sv-back').style.visibility = st.idx === 0 ? 'hidden' : 'visible';
+    document.getElementById('sv-abort').style.display = intake ? 'none' : 'inline-block';
     document.getElementById('sv-next').textContent =
       st.idx === st.pages.length - 1 ? (intake ? 'Fragebogen starten' : 'Fertig') : 'Weiter';
     const body = document.getElementById('sv-body');
@@ -1765,8 +1905,9 @@ const App = {
         const b = document.createElement('button');
         b.className = 'imgopt' + (a[fid] === o.v ? ' sel' : '');
         const pic = o.img && typeof IMG !== 'undefined' && IMG[o.img];
-        b.innerHTML = (pic ? '<img alt="">' : '<span class="noimg">ohne Abbildung</span>') + '<span class="cap"></span>';
-        if (pic) b.querySelector('img').src = IMG[o.img];
+        b.innerHTML = (o.svg ? '<span class="svgwrap">' + o.svg + '</span>'
+          : (pic ? '<img alt="">' : '<span class="noimg">ohne Abbildung</span>')) + '<span class="cap"></span>';
+        if (pic && !o.svg) b.querySelector('img').src = IMG[o.img];
         b.querySelector('.cap').textContent = o.l;
         b.onclick = () => {
           a[fid] = o.v;
@@ -1923,7 +2064,7 @@ const App = {
     while (i < st.pages.length && this.leer(i)) i++;
     if (i >= st.pages.length) {
       if (st.phase === 'intake') { this.finishIntake(); return; }
-      this.go('s-thanks'); this.persistDraft(); return;
+      this.patiententeilFertig(); return;
     }
     st.idx = i; this.persistDraft(); this.render();
   },
@@ -1934,15 +2075,91 @@ const App = {
     if (i >= 0 && !this.leer(i)) { this.state.idx = i; this.render(); }
   },
 
+  /* ---- Abbrechen und Überspringen ---- */
+  abbruchMenu() {
+    if (this.state.phase === 'intake') { this.state.pinCancelTo = 's-survey'; this.state.pinThen = () => this.zeigeAbbruch(); this.askPin(); return; }
+    this.state.pinCancelTo = 's-survey';
+    this.state.pinThen = () => this.zeigeAbbruch();
+    if (this.unlocked) this.zeigeAbbruch(); else this.askPin();
+  },
+
+  zeigeAbbruch() {
+    const st = this.state;
+    const cur = st.pages[st.idx];
+    const rest = st.pages.length - st.idx - 1;
+    document.getElementById('ab-info').textContent =
+      'Aktueller Bogen: ' + (cur ? cur.ins.name : '') + '. Danach folgen noch ' + rest + ' Bildschirmseiten.';
+    const skip = document.getElementById('ab-skip');
+    skip.style.display = (st.phase === 'intake' || !cur) ? 'none' : 'block';
+    if (cur) skip.textContent = 'Bogen "' + cur.ins.name + '" überspringen';
+    this.go('s-abort');
+  },
+
+  abbruchWeiter() { this.go('s-survey'); this.render(); },
+
+  bogenUeberspringen() {
+    const st = this.state;
+    const cur = st.pages[st.idx];
+    if (!cur) return;
+    const id = cur.ins.id;
+    st.meta.uebersprungen = ((st.meta.uebersprungen || '') + ' ' + id).trim();
+    let i = st.idx;
+    while (i < st.pages.length && st.pages[i].ins.id === id) i++;
+    while (i < st.pages.length && this.leer(i)) i++;
+    if (i >= st.pages.length) { this.patiententeilFertig(); return; }
+    st.idx = i; this.persistDraft();
+    this.go('s-survey'); this.render();
+  },
+
+  patiententeilFertig() {
+    if (Store.data.settings.examLater) {
+      this.stillOnThanks = true;
+      this.finish();
+      this.go('s-thanks');
+      return;
+    }
+    this.go('s-thanks');
+    this.persistDraft();
+  },
+
+  abbruchBeenden() {
+    this.state.meta.abgebrochen = 1;
+    const st = this.state;
+    const offen = [];
+    for (let i = st.idx; i < st.pages.length; i++) {
+      const id = st.pages[i].ins.id;
+      if (offen.indexOf(id) < 0) offen.push(id);
+    }
+    st.meta.uebersprungen = ((st.meta.uebersprungen || '') + ' ' + offen.join(' ')).trim();
+    if (Store.data.settings.examLater) { this.stillOnThanks = true; this.finish(); this.go('s-thanks'); return; }
+    this.openExam();
+  },
+
+  abbruchVerwerfen() {
+    if (!confirm('Alle Angaben dieser Befragung verwerfen? Das lässt sich nicht rückgängig machen.')) return;
+    Store.data.draft = null; Store.save();
+    this.state.meta = null; this.state.answers = {}; this.state.pages = []; this.state.idx = 0;
+    this.go('s-home');
+  },
+
   /* ---- Ausstieg für das Personal ---- */
   escapeHatch() {
     this.state.pinCancelTo = 's-survey';
     this.state.pinThen = () => this.openExam();
     this.askPin();
   },
+  naechstePatient() {
+    this.region = null;
+    document.getElementById('f-notiz').value = '';
+    document.getElementById('f-unt').value = heute();
+    document.getElementById('f-op').value = '';
+    this.setMode('patient');
+    this.go('s-setup');
+  },
+
   openAdminFromThanks() {
     this.state.pinCancelTo = 's-thanks';
-    this.state.pinThen = () => this.openExam();
+    this.state.pinThen = () => (this.state.meta ? this.openExam() : (this.renderAdmin(), this.go('s-admin')));
     this.askPin();
   },
   openAdmin() {
@@ -2110,7 +2327,8 @@ const App = {
     st.meta = null; st.answers = {}; st.pages = []; st.idx = 0;
     this.updateHome();
     this.renderAdmin();
-    this.go('s-admin');
+    if (!this.stillOnThanks) this.go('s-admin');
+    this.stillOnThanks = false;
   },
 
   /* Befund eines gespeicherten Falls nachtragen */
@@ -2129,6 +2347,17 @@ const App = {
   /* Werte, die aus anderen Antworten übernommen werden */
   ableiten(ctx) {
     const a = this.state.answers, cfg = Store.data.settings;
+    /* Bewegungsumfang des Mayo-Scores aus dem Extensions-Flexions-Bogen */
+    if (this.state.sel.indexOf('elbrom') >= 0 && this.state.sel.indexOf('meps') >= 0) {
+      ctx.sides.forEach(s => {
+        const ext = a['elb_ext_' + s], flex = a['elb_flex_' + s];
+        if (a['meps_rom_' + s] == null && ext != null && flex != null) {
+          const bogen = Math.max(0, flex - ext);
+          a['meps_rom_' + s] = bogen > 100 ? 20 : (bogen >= 50 ? 15 : 5);
+          a['meps_rom_abgeleitet_' + s] = 1;
+        }
+      });
+    }
     if (cfg.mergePain && this.state.sel.indexOf('cs') >= 0 && this.state.sel.indexOf('ases') >= 0) {
       ctx.sides.forEach(s => {
         if (a['ases_pain_' + s] == null && a['cs_pain_' + s] != null) {
@@ -2149,22 +2378,45 @@ const App = {
     const cfg = Store.data.settings;
     const se = document.getElementById('settings-box');
     if (se) se.innerHTML =
-      '<div class="chk' + (cfg.ids ? ' sel' : '') + '" onclick="App.toggleSetting(\'ids\')"><span class="box"></span>' +
-      '<span><b>Name und Geburtsdatum mit exportieren</b><small>Ausgeschaltet enthalten die Exporte nur Fall-Nummer, Alter und Untersuchungsdatum.</small></span></div>' +
-      '<div class="chk' + (cfg.mergePain ? ' sel' : '') + '" onclick="App.toggleSetting(\'mergePain\')"><span class="box"></span>' +
-      '<span><b>Doppelte Schmerzfrage zusammenfassen</b><small>Wenn Constant und ASES gemeinsam laufen, wird die ASES-Schmerzskala nicht erneut gefragt, sondern aus der Constant-Skala umgerechnet. Im Export als abgeleitet gekennzeichnet.</small></span></div>' +
-      '<div class="chk' + (cfg.examConstant ? ' sel' : '') + '" onclick="App.toggleSetting(\'examConstant\')"><span class="box"></span>' +
-      '<span><b>Constant über den Untersuchungsbogen erheben</b><small>Der Patient beantwortet die neun Constant-Seiten dann nicht. Stattdessen füllt der Untersucher den kompakten Bogen mit Beweglichkeit, Alltag, Rotation, Kraft, Stabilität und klinischen Tests aus. Spart etwa neun Bildschirmseiten je Patient.</small></span></div>';
+      einstellung('examLater', cfg.examLater, 'Untersucherbefunde später eintragen',
+        'Der Patient beendet die Befragung selbst, der Fall wird sofort gespeichert. Ihre Werte tragen Sie danach oben unter "Offene Befunde" nach. Ausgeschaltet folgt der Untersucherteil direkt im Anschluss an die Befragung.') +
+      einstellung('ids', cfg.ids, 'Name und Geburtsdatum mit exportieren',
+        'Ausgeschaltet enthalten die Exporte nur Patienten-Nummer, Fall, Besuch, Alter, Geschlecht und Datumsangaben.') +
+      einstellung('mergePain', cfg.mergePain, 'Doppelte Schmerzfrage zusammenfassen',
+        'Wenn Constant und ASES gemeinsam laufen, wird die ASES-Schmerzskala nicht erneut gefragt, sondern aus der Constant-Skala umgerechnet. Im Export als abgeleitet gekennzeichnet.') +
+      einstellung('examConstant', cfg.examConstant, 'Constant über den Untersuchungsbogen erheben',
+        'Der Patient beantwortet die Constant-Seiten dann nicht. Stattdessen füllen Sie den kompakten Bogen mit Beweglichkeit, Alltag, Rotation, Kraft, Stabilität und klinischen Tests aus. Sinnvoll, wenn Sie gemessene statt geschätzte Werte brauchen.');
+    const zeigeName = Store.data.settings.ids;
     const w = document.getElementById('admin-warn');
     w.innerHTML = Store.ok ? '' :
       '<div class="notice">Der lokale Speicher dieses Geräts ist nicht verfügbar. Daten gehen beim Neuladen verloren. Bitte die Datei über einen lokalen Webserver öffnen statt direkt aus der Dateien-App.</div>';
     document.getElementById('lic-note').textContent =
       'Hinweis zu Lizenzen: DASH, EQ-5D und die Oxford-Scores unterliegen Nutzungsbedingungen der jeweiligen Herausgeber. Vor dem Einsatz in einer Studie bitte die Registrierung prüfen.';
+    /* Offene Untersucherbefunde */
+    const offenEl = document.getElementById('offen-box');
+    const offen = Store.data.records.filter(r => r.meta.vollstaendig === 0);
+    if (offenEl) {
+      if (!offen.length) {
+        offenEl.innerHTML = '<p class="hint">Keine offenen Befunde. Alle gespeicherten Erhebungen sind vollständig.</p>';
+      } else {
+        let oh = '<table><tr><th>Fall</th>' + (zeigeName ? '<th>Name</th>' : '') +
+          '<th>Untersuchung</th><th>Diagnose</th><th>Fehlt</th><th></th></tr>';
+        offen.slice().reverse().forEach(r => {
+          const nm = zeigeName ? '<td>' + esc([r.meta.nachname, r.meta.vorname].filter(Boolean).join(', ') || '–') + '</td>' : '';
+          oh += '<tr><td>' + esc(r.meta.record_id) + '</td>' + nm +
+            '<td>' + (r.meta.untersuchung_datum || '') + '</td>' +
+            '<td>' + esc(r.meta.diagnose || '–') + '</td>' +
+            '<td>' + esc(offeneBefundListe(r)) + '</td>' +
+            '<td><button class="btn" style="min-height:40px;padding:0 16px" onclick="App.nachtragen(\'' + r.id + '\')">Befund eintragen</button></td></tr>';
+        });
+        offenEl.innerHTML = oh + '</table>';
+      }
+    }
+
     const recs = Store.data.records;
     document.getElementById('rec-count').textContent = '(' + recs.length + ')';
     const t = document.getElementById('rec-table');
     if (!recs.length) { t.innerHTML = '<p class="hint">Noch keine Erhebungen gespeichert.</p>'; return; }
-    const zeigeName = Store.data.settings.ids;
     let h = '<table><tr><th>Fall</th>' + (zeigeName ? '<th>Name</th>' : '') +
       '<th>Untersuchung</th><th>Seit OP</th><th>Diagnose</th><th>Status</th><th></th></tr>';
     recs.slice().reverse().forEach(r => {
@@ -2175,9 +2427,7 @@ const App = {
         '<td>' + (r.meta.untersuchung_datum || '') + '</td>' +
         '<td>' + (r.meta.zeitfenster || '') + '</td>' +
         '<td>' + esc(r.meta.diagnose || '–') + '</td>' +
-        '<td>' + (r.meta.vollstaendig === 0
-          ? '<span class="pill warnpill">Befund fehlt</span>'
-          : '<span class="pill">vollständig</span>') + '</td>' +
+        '<td>' + statusPills(r.meta) + '</td>' +
         '<td><button class="btn quiet" style="min-height:40px;padding:0 14px" onclick="App.detail(\'' + r.id + '\')">Details</button></td></tr>';
     });
     t.innerHTML = h + '</table>';
@@ -2216,6 +2466,25 @@ const App = {
   }
 };
 
+function einstellung(key, an, titel, text) {
+  return '<div class="chk' + (an ? ' sel' : '') + '" onclick="App.toggleSetting(\'' + key + '\')">' +
+    '<span class="box"></span><span><b>' + titel + '</b><small>' + text + '</small></span></div>';
+}
+
+function offeneBefundListe(r) {
+  const ids = (r.meta.boegen || '').split(' ').filter(x => BY_ID[x] && (BY_ID[x].exam || []).length);
+  const namen = ids.map(x => BY_ID[x].name.replace(/ \(.*\)$/, ''));
+  return namen.length ? namen.join(', ') : 'Befund';
+}
+
+function statusPills(m) {
+  const p = [];
+  if (m.vollstaendig === 0) p.push('<span class="pill warnpill">Befund fehlt</span>');
+  if (m.abgebrochen) p.push('<span class="pill warnpill">abgebrochen</span>');
+  if (m.uebersprungen) p.push('<span class="pill warnpill">Bögen übersprungen</span>');
+  return p.length ? p.join('') : '<span class="pill">vollständig</span>';
+}
+
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function labelForScore(k) {
   return k.replace(/^sc_/, '').replace(/_/g, ' ');
@@ -2226,7 +2495,7 @@ function labelForScore(k) {
    --------------------------------------------------------------- */
 const META_FIELDS = ['record_id', 'patient_id', 'fall_nr', 'visit_nr', 'untersuchung_datum', 'uhrzeit', 'op_datum',
   'tage_seit_op', 'monate_seit_op', 'zeitfenster', 'alter', 'geschlecht', 'seite', 'dominant',
-  'diagnose_code', 'diagnose', 'region', 'boegen', 'notiz', 'vollstaendig',
+  'diagnose_code', 'diagnose', 'region', 'boegen', 'notiz', 'vollstaendig', 'abgebrochen', 'uebersprungen',
   'nachname', 'vorname', 'geburtsdatum', 'person_key'];
 const ID_FIELDS = ['nachname', 'vorname', 'geburtsdatum', 'person_key'];
 
@@ -2317,6 +2586,7 @@ const Exporter = {
     [['patient_id', 'Patienten-Nummer', 'text', ''], ['fall_nr', 'Fallnummer je Patient', 'text', 'integer'],
      ['visit_nr', 'Besuchsnummer im Fall', 'text', 'integer'],
      ['notiz', 'Notiz', 'text', ''], ['vollstaendig', 'Befund vollstaendig', 'text', 'integer'],
+     ['abgebrochen', 'Befragung abgebrochen', 'text', 'integer'], ['uebersprungen', 'Uebersprungene Boegen', 'text', ''],
      ['person_key', 'Personenschluessel', 'text', ''],
      ['untersuchung_datum', 'Untersuchungsdatum', 'text', 'date_ymd'], ['uhrzeit', 'Uhrzeit', 'text', 'time'],
      ['op_datum', 'Operationsdatum', 'text', 'date_ymd'], ['tage_seit_op', 'Tage seit Operation', 'text', 'integer'],

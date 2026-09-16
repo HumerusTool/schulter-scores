@@ -1,5 +1,5 @@
 /* Offlinebetrieb: alle Dateien beim ersten Aufruf ablegen */
-const CACHE = 'score-erhebung-v4';
+const CACHE = 'score-erhebung-v8';
 const DATEIEN = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
